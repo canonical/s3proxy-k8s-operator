@@ -1,0 +1,8 @@
+ops~=1.5.4
+deepdiff~=6.2.3
+lightkube~=0.12.0
+lightkube-models
+parse~=1.19.0
+jsonschema
+
+PyYAML~=6.0
