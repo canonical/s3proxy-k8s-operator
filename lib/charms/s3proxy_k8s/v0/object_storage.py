@@ -52,9 +52,9 @@ class SomeCharm(CharmBase):
 import json
 import logging
 import typing
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 
-from ops.charm import CharmBase, RelationBrokenEvent, RelationEvent
+from ops.charm import CharmBase, HookEvent, RelationBrokenEvent, RelationEvent
 from ops.framework import BoundEvent, EventSource, Object, ObjectEvents, StoredState
 from ops.model import Application, ModelError, Relation
 
@@ -351,16 +351,21 @@ class _ObjectStorageEvent(RelationEvent):
 class ObjectStorageDataProvidedEvent(_ObjectStorageEvent):
     """Event representing that object storage data has been provided for an app."""
 
-    __args__ = "bucket"  # type: ignore
+    __optional_kwargs__ = {"bucket": ""}  # type: ignore
 
     if typing.TYPE_CHECKING:
         bucket = None  # type: Optional[str]
+
+
+class ObjectStorageDataRefreshEvent(HookEvent):
+    """Request a refresh of data."""
 
 
 class ObjectStorageProviderCharmEvents(ObjectEvents):
     """List of events that the auth provider charm can leverage."""
 
     requested = EventSource(ObjectStorageDataProvidedEvent)
+    refresh = EventSource(ObjectStorageDataRefreshEvent)
 
 
 class _ObjectStorageProviderBase(_ObjectStorageBase):
@@ -419,10 +424,11 @@ class SingleAuthObjectStorageProvider(_ObjectStorageProviderBase):
         self._request_endpoints(event)
 
     def _handle_upgrade_or_leader(self, event):
-        self._request_endpoints(event)
+        # We don't do anything on upgrades or leader-elected yet.
+        self.on.refresh.emit()  # type: ignore
 
     def _handle_refresh(self, event):
-        self._request_endpoints(event)
+        self.on.refresh.emit()  # type: ignore
 
     def _request_endpoints(self, event: Any) -> None:
         """Handler triggered on pretty much all events.
@@ -442,7 +448,7 @@ class SingleAuthObjectStorageProvider(_ObjectStorageProviderBase):
             bucket = event.relation.data.get(event.relation.app["bucket"], "anonymous")
         else:
             bucket = "anonymous"
-        self.on.requested.emit(bucket=bucket)  # type: ignore
+        self.on.requested.emit(event.relation, bucket=bucket)  # type: ignore
 
     def update_endpoints(self, data: Dict[str, str]):
         """Update relation data bags with endpoint information."""
@@ -466,7 +472,7 @@ class ObjectStorageReadyEvent(_ObjectStorageEvent):
 
 
 class ObjectStorageBrokenEvent(_ObjectStorageEvent):
-    """Event representing that an object storage relation has been broken"""
+    """Event representing that an object storage relation has been broken."""
 
 
 class ObjectStorageRequirerCharmEvents(ObjectEvents):
@@ -492,7 +498,7 @@ class ObjectStorageRequirer(_ObjectStorageBase):
         relation_name: str = DEFAULT_RELATION_NAME,
     ):
         """Constructs a requirer that consumes object storage.
-        .
+
         This class can be initialized as follows:
 
             self.object_storage = ObjectStorageRequirer(
@@ -503,8 +509,10 @@ class ObjectStorageRequirer(_ObjectStorageBase):
         Args:
             charm: CharmBase: the charm which manages this object.
             bucket: str: bucket name to use on the endpoint.
-            relation_name: str: name of the relation in `metadata.yaml` that has the `object-storage` interface.
-            refresh_event: an optional bound event which will be observed to re-set authentication configuration.
+            relation_name: str: name of the relation in `metadata.yaml` that has the
+                `object-storage` interface.
+            refresh_event: an optional bound event which will be observed to re-set
+                authentication configuration.
         """
         super().__init__(charm, relation_name)
         self._stored.set_default(current_endpoints=None)
@@ -527,6 +535,7 @@ class ObjectStorageRequirer(_ObjectStorageBase):
         changed = previous_endpoints == current_endpoints
         if changed:
             self.on.ready.emit(  # type: ignore
+                event.relation,
                 access_key=current_endpoints["access-key"],
                 bucket=current_endpoints["bucket"],
                 endpoint=current_endpoints["endpoint"],
@@ -535,8 +544,8 @@ class ObjectStorageRequirer(_ObjectStorageBase):
         event.relation.data[self.charm.app]["bucket"] = self.bucket
 
     def _handle_relation_broken(self, event):
-        """Emit an event the parent charm can listen to"""
-        self.on.broken.emit()  # type: ignore
+        """Emit an event the parent charm can listen to."""
+        self.on.broken.emit(event.relation)  # type: ignore
 
     @property
     def _endpoints_from_relation_data(self) -> Dict[str, str]:

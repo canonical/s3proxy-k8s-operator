@@ -32,7 +32,7 @@ storage:
 resources:
   s3proxy-image:
     type: oci-image
-    description: OCI image for Grafana Mimir
+    description: OCI image for s3proxy
     upstream-source: ghcr.io/canonical/s3proxy:2.0.0
 
 provides:

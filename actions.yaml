@@ -1,0 +1,3 @@
+get-credentials:
+  description: |
+    Get the identity/ACCESS_KEY and credential/SECRET_KEY to use

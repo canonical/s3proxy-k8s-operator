@@ -17,9 +17,9 @@ from typing import Any, Dict, Literal, Optional
 from charms.observability_libs.v0.kubernetes_service_patch import KubernetesServicePatch
 from charms.s3proxy_k8s.v0.object_storage import (
     ObjectStorageDataProvidedEvent,
-    ObjectStorageProvider,
+    SingleAuthObjectStorageProvider,
 )
-from ops.charm import CharmBase, HookEvent, WorkloadEvent
+from ops.charm import ActionEvent, CharmBase, HookEvent, WorkloadEvent
 from ops.framework import StoredState
 from ops.main import main
 from ops.model import ActiveStatus, WaitingStatus
@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 class S3ProxyConfig:
     """A basic holder and transformer for S3Proxy Configuration."""
 
-    authorization: Literal["aws-v2-or-v4", "none"] = "aws-v2-or-v4"
-    credential: str = ""
+    authorization: Literal["aws-v2-or-v4", "none"] = "none"
     identity: str = ""
+    credential: str = ""
     cors_allow_all: bool = True
     endpoint: str = "http://0.0.0.0:8080"
 
@@ -70,14 +70,16 @@ class S3ProxyK8SOperatorCharm(CharmBase):
 
         # TODO: Move to Secrets when released
         self._stored.set_default(  # type: ignore
+            identity="",
             credential="",
-            authorication="",
         )
 
         self.service_patch = KubernetesServicePatch(self, [(self.app.name, self.http_listen_port)])
 
-        self.object_storage = ObjectStorageProvider(self, "object-storage")
+        self.object_storage = SingleAuthObjectStorageProvider(self, "object-storage")
         self.framework.observe(self.object_storage.on.requested, self._on_client_requested)
+        self.framework.observe(self.object_storage.on.refresh, self._on_client_requested)
+        self.framework.observe(self.on.get_credentials_action, self._on_get_credentials)
 
         self.framework.observe(self.on.s3proxy_pebble_ready, self._on_s3proxy_pebble_ready)  # type: ignore
         self.framework.observe(self.on.config_changed, self._on_config_changed)
@@ -87,21 +89,28 @@ class S3ProxyK8SOperatorCharm(CharmBase):
         """Generate credentials if they don't exist and aren't set in config."""
         alphabet = string.ascii_letters + string.digits
 
-        credential = self.config.get("credential", "") or self._stored.credential  # type: ignore
-        authorization = self.config.get("authorization", "").lower() or self._stored.authorization  # type: ignore
+        identity = self.config.get("identity", "") or self._stored.identity  # type: ignore
+        credential = self.config.get("credential", "").lower() or self._stored.credential  # type: ignore
 
-        if not credential and not authorization == "none":
+        if not identity:
             # The AWS default for access key length is 20 characters
-            credential = "".join(secrets.choice(alphabet) for i in range(20))
+            identity = "".join(secrets.choice(alphabet) for i in range(20))
 
-        if not authorization:
+        if not credential:
             # The AWS default for access key length is 40 characters
-            authorization = "".join(secrets.choice(alphabet) for i in range(40))
+            credential = "".join(secrets.choice(alphabet) for i in range(40))
 
-        self._stored.credential = credential or ""  # type: ignore
-        self._stored.authorization = authorization  # type: ignore
+        self._stored.identity = identity or ""  # type: ignore
+        self._stored.credential = credential  # type: ignore
 
-        return {"credential": credential, "authorization": authorization}
+        return {"identity": identity, "credential": credential}
+
+    def _on_get_credentials(self, event: ActionEvent) -> None:
+        """Return the connection credentials."""
+        cred = self._credentials
+        event.set_results(
+            {"identity": cred["identity"], "credential": cred["credential"]}
+        )
 
     @property
     def _config(self) -> S3ProxyConfig:
@@ -122,8 +131,8 @@ class S3ProxyK8SOperatorCharm(CharmBase):
         self.object_storage.update_endpoints(
             {
                 "endpoint": self.hostname,
-                "access-key": self._credentials["credential"],
-                "secret-key": self._credentials["authorization"],
+                "access-key": self._credentials["identity"],
+                "secret-key": self._credentials["credential"],
             }
         )
 
@@ -134,6 +143,7 @@ class S3ProxyK8SOperatorCharm(CharmBase):
 
         if self._container.get_plan().services != self._build_layer().services:
             self._container.add_layer(self.name, self._build_layer(), combine=True)
+            self._container.replan()
             logger.info("s3proxy (re)started")
 
         self.unit.status = ActiveStatus()
@@ -144,7 +154,7 @@ class S3ProxyK8SOperatorCharm(CharmBase):
             "jclouds.region": "us-east-1",
             "jclouds.provider": "filesystem",
             "jclouds.identity": "remote-identity",
-            "jclouds.credential": "remote-credential",
+            "jclouds.identity": "remote-identity",
             "jclouds.filesystem.basedir": f"{DATA_DIR}/blobstore",
         }
         args.update(self._config.as_args())
@@ -157,7 +167,7 @@ class S3ProxyK8SOperatorCharm(CharmBase):
                     "s3proxy": {
                         "override": "replace",
                         "summary": "s3proxy daemon",
-                        "command": f"/usr/bin/s3proxy {arg_str}--properties /dev/null",
+                        "command": f"java {arg_str} -jar /usr/bin/s3proxy --properties /dev/null",
                         "startup": "enabled",
                     }
                 },
@@ -181,7 +191,13 @@ class S3ProxyK8SOperatorCharm(CharmBase):
         if not self._container.can_connect():
             return None
 
-        result, _ = self._container.exec(["/usr//bin/s3proxy", "-version"]).wait_output()
+        result, _ = self._container.exec(["/usr/bin/s3proxy", "--version"]).wait_output()
+        result = result.strip()
+        # The result looks like:
+        # [s3proxy] E 01-16 18:23:47.925 main org.gaul.s3proxy.Main:279 |::] 2.0.0
+        ver = re.sub(r".*?((\d+\.?)+)$", r"\1", result)
+        if ver != result:
+            return ver
         return result
 
     @property
