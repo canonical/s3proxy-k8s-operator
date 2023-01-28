@@ -21,19 +21,16 @@ class TestCharm(unittest.TestCase):
     def setUp(self, *_):
         self.container_name: str = "mimir"
         self.harness = Harness(S3ProxyK8SOperatorCharm)
-        patcher = patch.object(S3ProxyK8SOperatorCharm, "_workload_version", new_callable=PropertyMock)
+        patcher = patch.object(
+            S3ProxyK8SOperatorCharm, "_workload_version", new_callable=PropertyMock
+        )
         self.mock_version = patcher.start()
         self.mock_version.return_value = "2.0.0"
         self.addCleanup(patcher.stop)
         self.harness.begin()
 
     def test_pebble_ready_with_anonymous_access(self):
-        self.harness.update_config(
-            {
-                "identity": "unittestid",
-                "credential": "unittestcredential"
-            }
-        )
+        self.harness.update_config({"identity": "unittestid", "credential": "unittestcredential"})
 
         expected_plan = {
             "services": {
@@ -41,17 +38,17 @@ class TestCharm(unittest.TestCase):
                     "override": "replace",
                     "summary": "s3proxy daemon",
                     "command": 'java -DLOG_LEVEL="info" '
-                               '-Djclouds.region="us-east-1" '
-                               '-Djclouds.provider="filesystem" '
-                               '-Djclouds.identity="remote-identity" '
-                               '-Djclouds.filesystem.basedir="/data/blobstore" '
-                               '-Ds3proxy.authorization="none" '
-                               '-Ds3proxy.identity="unittestid" '
-                               '-Ds3proxy.credential="unittestcredential" '
-                               '-Ds3proxy.cors-allow-all="true" '
-                               '-Ds3proxy.endpoint="http://0.0.0.0:8080" '
-                               '-jar /usr/bin/s3proxy --properties '
-                               '/dev/null',
+                    '-Djclouds.region="us-east-1" '
+                    '-Djclouds.provider="filesystem" '
+                    '-Djclouds.identity="remote-identity" '
+                    '-Djclouds.filesystem.basedir="/data/blobstore" '
+                    '-Ds3proxy.authorization="aws-v2-or-v4" '
+                    '-Ds3proxy.identity="unittestid" '
+                    '-Ds3proxy.credential="unittestcredential" '
+                    '-Ds3proxy.cors-allow-all="true" '
+                    '-Ds3proxy.endpoint="http://0.0.0.0:8080" '
+                    "-jar /usr/bin/s3proxy --properties "
+                    "/dev/null",
                     "startup": "enabled",
                 }
             },
@@ -69,7 +66,7 @@ class TestCharm(unittest.TestCase):
             {
                 "identity": "unittestid",
                 "credential": "unittestcredential",
-                "authorization": "aws-v2-or-v4"
+                "authorization": "aws-v2-or-v4",
             }
         )
 
@@ -79,17 +76,17 @@ class TestCharm(unittest.TestCase):
                     "override": "replace",
                     "summary": "s3proxy daemon",
                     "command": 'java -DLOG_LEVEL="info" '
-                               '-Djclouds.region="us-east-1" '
-                               '-Djclouds.provider="filesystem" '
-                               '-Djclouds.identity="remote-identity" '
-                               '-Djclouds.filesystem.basedir="/data/blobstore" '
-                               '-Ds3proxy.authorization="aws-v2-or-v4" '
-                               '-Ds3proxy.identity="unittestid" '
-                               '-Ds3proxy.credential="unittestcredential" '
-                               '-Ds3proxy.cors-allow-all="true" '
-                               '-Ds3proxy.endpoint="http://0.0.0.0:8080" '
-                               '-jar /usr/bin/s3proxy --properties '
-                               '/dev/null',
+                    '-Djclouds.region="us-east-1" '
+                    '-Djclouds.provider="filesystem" '
+                    '-Djclouds.identity="remote-identity" '
+                    '-Djclouds.filesystem.basedir="/data/blobstore" '
+                    '-Ds3proxy.authorization="aws-v2-or-v4" '
+                    '-Ds3proxy.identity="unittestid" '
+                    '-Ds3proxy.credential="unittestcredential" '
+                    '-Ds3proxy.cors-allow-all="true" '
+                    '-Ds3proxy.endpoint="http://0.0.0.0:8080" '
+                    "-jar /usr/bin/s3proxy --properties "
+                    "/dev/null",
                     "startup": "enabled",
                 }
             },
@@ -112,15 +109,12 @@ class TestCharm(unittest.TestCase):
             {
                 "identity": "unittestid",
                 "credential": "unittestcredential",
-                "authorization": "aws-v2-or-v4"
+                "authorization": "aws-v2-or-v4",
             }
         )
 
         event = MagicMock()
         self.harness.charm._on_get_credentials(event)
         event.set_results.assert_called_with(
-            {
-                "identity": "unittestid",
-                "credential": "unittestcredential"
-            }
+            {"identity": "unittestid", "credential": "unittestcredential"}
         )

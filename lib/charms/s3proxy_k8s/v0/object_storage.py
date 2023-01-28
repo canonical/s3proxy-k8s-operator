@@ -3,7 +3,7 @@
 
 r"""# S3-Compatible Object Storage Library.
 
-This library wraps relation endpoints using the `object-storage` interface
+This library wraps relation endpoints using the `s3` interface
 and provides a Python API both for requesting and providing per-application
 object storage.
 
@@ -20,8 +20,8 @@ In the `metadata.yaml` of the charm, add the following:
 
 ```yaml
 requires:
-    object-storage:
-        interface: object-storage
+    s3:
+        interface: s3
 ```
 
 Then, to initialise the library:
@@ -49,10 +49,9 @@ class SomeCharm(CharmBase):
         pass
 """
 
-import json
 import logging
 import typing
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict  # noqa: F401
 
 from ops.charm import CharmBase, HookEvent, RelationBrokenEvent, RelationEvent
 from ops.framework import BoundEvent, EventSource, Object, ObjectEvents, StoredState
@@ -68,8 +67,8 @@ LIBAPI = 0
 # to 0 if you are raising the major API version
 LIBPATCH = 1
 
-DEFAULT_RELATION_NAME = "object-storage"
-RELATION_INTERFACE = "object-storage"
+DEFAULT_RELATION_NAME = "s3"
+RELATION_INTERFACE = "s3"
 
 logger = logging.getLogger(__name__)
 
@@ -445,24 +444,33 @@ class SingleAuthObjectStorageProvider(_ObjectStorageProviderBase):
             return
 
         if event.relation and event.relation.app:
-            bucket = event.relation.data.get(event.relation.app["bucket"], "anonymous")
+            bucket = event.relation.data.get(event.relation.app, {}).get(
+                "bucket", f"{event.relation.app.name}-{event.relation.id}"
+            )
         else:
             bucket = "anonymous"
         self.on.requested.emit(event.relation, bucket=bucket)  # type: ignore
 
-    def update_endpoints(self, data: Dict[str, str]):
+    def update_endpoints(self, data: Dict[str, str], relation_id: Optional[int] = None):
         """Update relation data bags with endpoint information."""
-        for r in self.relations:
-            if bucket := r.data.get(r.app, {}).get("bucket", ""):  # type: ignore
-                data["bucket"] = bucket
-                _validate_data(data, ANONYMOUS_OBJECT_STORAGE_REQUIRES_APP_SCHEMA)
-                r.data[self.charm.app] = json.dumps(data)  # type: ignore
+        if relation_id:
+            for r in [rel for rel in self.relations if rel.id == relation_id]:
+                if bucket := r.data.get(r.app, {}).get("bucket", ""):  # type: ignore
+                    data["bucket"] = bucket
+                    _validate_data(data, ANONYMOUS_OBJECT_STORAGE_REQUIRES_APP_SCHEMA)
+                    r.data[self.charm.app].update(data)  # type: ignore
+        else:
+            for r in self.relations:
+                if bucket := r.data.get(r.app, {}).get("bucket", ""):  # type: ignore
+                    data["bucket"] = bucket
+                    _validate_data(data, ANONYMOUS_OBJECT_STORAGE_REQUIRES_APP_SCHEMA)
+                    r.data[self.charm.app].update(data)  # type: ignore
 
 
 class ObjectStorageReadyEvent(_ObjectStorageEvent):
     """Event representing that object storage data has been provided for an app."""
 
-    __args__ = ("access_key", "bucket", "endpoint", "secret_key")
+    __args__ = ("bucket", "endpoint", "access_key", "secret_key")
 
     if typing.TYPE_CHECKING:
         access_key = None  # type: Optional[str]
@@ -494,8 +502,8 @@ class ObjectStorageRequirer(_ObjectStorageBase):
     def __init__(
         self,
         charm,
-        bucket: str,
         relation_name: str = DEFAULT_RELATION_NAME,
+        bucket: Optional[str] = None,
     ):
         """Constructs a requirer that consumes object storage.
 
@@ -508,15 +516,16 @@ class ObjectStorageRequirer(_ObjectStorageBase):
 
         Args:
             charm: CharmBase: the charm which manages this object.
-            bucket: str: bucket name to use on the endpoint.
             relation_name: str: name of the relation in `metadata.yaml` that has the
-                `object-storage` interface.
+                `s3` interface.
             refresh_event: an optional bound event which will be observed to re-set
                 authentication configuration.
+            bucket: Optional[str]: bucket name to request on the endpoint. If not
+                provided, {model.name}-{app.name} will be used.
         """
         super().__init__(charm, relation_name)
-        self._stored.set_default(current_endpoints=None)
-        self.bucket = bucket
+        self._stored.set_default(current_endpoints={})
+        self.bucket = bucket or f"{charm.model.name}-{charm.app.name}"
 
     @property
     def relation(self) -> Optional[Relation]:
@@ -527,25 +536,33 @@ class ObjectStorageRequirer(_ObjectStorageBase):
         # we calculate the diff between the urls we were aware of
         # before and those we know now
         previous_endpoints = self._stored.current_endpoints or {}  # type: ignore
-        current_endpoints = (
-            {} if isinstance(event, RelationBrokenEvent) else self._endpoints_from_relation_data
-        )
+        current_endpoints = self._endpoints_from_relation_data
         self._stored.current_endpoints = current_endpoints  # type: ignore
 
-        changed = previous_endpoints == current_endpoints
+        if isinstance(event, RelationBrokenEvent):
+            self._stored.current_endpoints = {}
+            return
+
+        changed = previous_endpoints != current_endpoints
         if changed:
             self.on.ready.emit(  # type: ignore
                 event.relation,
-                access_key=current_endpoints["access-key"],
-                bucket=current_endpoints["bucket"],
-                endpoint=current_endpoints["endpoint"],
-                secret_key=current_endpoints["secret_key"],
+                current_endpoints["bucket"],
+                current_endpoints["endpoint"],
+                current_endpoints["access-key"],
+                current_endpoints["secret-key"],
             )
+            return
         event.relation.data[self.charm.app]["bucket"] = self.bucket
 
     def _handle_relation_broken(self, event):
         """Emit an event the parent charm can listen to."""
         self.on.broken.emit(event.relation)  # type: ignore
+
+    @property
+    def bucket_info(self):
+        """Indicate whether a remote bucket is available."""
+        return self._endpoints_from_relation_data
 
     @property
     def _endpoints_from_relation_data(self) -> Dict[str, str]:
@@ -554,7 +571,7 @@ class ObjectStorageRequirer(_ObjectStorageBase):
         if not relation:
             return {}
 
-        if not relation.app and relation.app.name:  # type: ignore
+        if not relation.app and not relation.app.name:  # type: ignore
             # We must be in a relation_broken hook
             return {}
         assert isinstance(relation.app, Application)
@@ -564,7 +581,7 @@ class ObjectStorageRequirer(_ObjectStorageBase):
             fields = ["access-key", "bucket", "endpoint", "secret-key"]
 
             for f in fields:
-                data[f] = relation.data.get(f, "")  # type: ignore
+                data[f] = relation.data[relation.app].get(f, "")  # type: ignore
         except ModelError as e:
             logger.debug(
                 "Error {} attempting to read remote app data; "

@@ -2,3 +2,4 @@ ops~=1.5.4
 lightkube~=0.12.0
 lightkube-models
 jsonschema
+boto3

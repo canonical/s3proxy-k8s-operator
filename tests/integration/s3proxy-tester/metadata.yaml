@@ -1,0 +1,20 @@
+# Copyright 2023 Canonical Ltd.
+# See LICENSE file for licensing details.
+name: s3proxy-tester
+description: |
+  This charm is nothing more than a dummy which can present itself to s3proxy
+summary: |
+  A charm to test the Grafana operator
+platforms:
+  - kubernetes
+containers:
+  s3proxy-tester:
+    resource: s3proxy-tester-image
+resources:
+  s3proxy-tester-image:
+    type: oci-image
+    description: upstream docker image for grafana-tester
+    upstream-source: k8s.gcr.io/pause:3.1
+requires:
+  s3:
+    interface: s3

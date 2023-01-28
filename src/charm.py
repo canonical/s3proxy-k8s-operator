@@ -14,9 +14,11 @@ import string
 from dataclasses import dataclass, fields
 from typing import Any, Dict, Literal, Optional
 
+from boto3 import resource as s3client
 from charms.observability_libs.v0.kubernetes_service_patch import KubernetesServicePatch
 from charms.s3proxy_k8s.v0.object_storage import (
     ObjectStorageDataProvidedEvent,
+    ObjectStorageDataRefreshEvent,
     SingleAuthObjectStorageProvider,
 )
 from ops.charm import ActionEvent, CharmBase, HookEvent, WorkloadEvent
@@ -76,10 +78,10 @@ class S3ProxyK8SOperatorCharm(CharmBase):
 
         self.service_patch = KubernetesServicePatch(self, [(self.app.name, self.http_listen_port)])
 
-        self.object_storage = SingleAuthObjectStorageProvider(self, "object-storage")
+        self.object_storage = SingleAuthObjectStorageProvider(self, "s3")
         self.framework.observe(self.object_storage.on.requested, self._on_client_requested)
-        self.framework.observe(self.object_storage.on.refresh, self._on_client_requested)
-        self.framework.observe(self.on.get_credentials_action, self._on_get_credentials)
+        self.framework.observe(self.object_storage.on.refresh, self._on_refresh_endpoint)
+        self.framework.observe(self.on.get_credentials_action, self._on_get_credentials)  # type: ignore
 
         self.framework.observe(self.on.s3proxy_pebble_ready, self._on_s3proxy_pebble_ready)  # type: ignore
         self.framework.observe(self.on.config_changed, self._on_config_changed)
@@ -108,9 +110,7 @@ class S3ProxyK8SOperatorCharm(CharmBase):
     def _on_get_credentials(self, event: ActionEvent) -> None:
         """Return the connection credentials."""
         cred = self._credentials
-        event.set_results(
-            {"identity": cred["identity"], "credential": cred["credential"]}
-        )
+        event.set_results({"identity": cred["identity"], "credential": cred["credential"]})
 
     @property
     def _config(self) -> S3ProxyConfig:
@@ -126,14 +126,41 @@ class S3ProxyK8SOperatorCharm(CharmBase):
     def _on_config_changed(self, event: HookEvent):
         self._configure()
 
-    def _on_client_requested(self, event: ObjectStorageDataProvidedEvent):
-        """Update requirers with endpoint information."""
+    def _on_refresh_endpoint(self, event: ObjectStorageDataRefreshEvent):
+        """Update observer endpoints with a new URI."""
         self.object_storage.update_endpoints(
             {
-                "endpoint": self.hostname,
+                "endpoint": f"http://{self.hostname}:{self.http_listen_port}",
+            }
+        )
+
+    def _on_client_requested(self, event: ObjectStorageDataProvidedEvent):
+        """Update requirers with endpoint information."""
+        if not self._container.can_connect():
+            event.defer()
+
+        client = s3client(
+            service_name="s3",
+            endpoint_url="http://127.0.0.1:8080",
+            aws_access_key_id=self._credentials["identity"],
+            aws_secret_access_key=self._credentials["credential"],
+        )
+
+        try:
+            client.create_bucket(Bucket=event.bucket)
+        except (
+            client.meta.client.exceptions.BucketAlreadyExists,
+            client.meta.client.exceptions.BucketAlreadyOwnedByYou,
+        ) as e:
+            logger.debug("Bucket already exists: %r", e)
+
+        self.object_storage.update_endpoints(
+            {
+                "endpoint": f"http://{self.hostname}:{self.http_listen_port}",
                 "access-key": self._credentials["identity"],
                 "secret-key": self._credentials["credential"],
-            }
+            },
+            event.relation.id,
         )
 
     def _configure(self):

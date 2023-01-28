@@ -18,6 +18,7 @@ options:
   authorization:
     type: string
     description: Authorization. Either "none" or "aws-v2-or-v4"
+    default: aws-v2-or-v4
   identity:
     type: string
     description: S3 Access key
