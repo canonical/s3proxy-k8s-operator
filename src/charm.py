@@ -14,7 +14,9 @@ import string
 from dataclasses import dataclass, fields
 from typing import Any, Dict, Literal, Optional
 
+import boto3
 from boto3 import resource as s3client
+from botocore import exceptions
 from charms.observability_libs.v0.kubernetes_service_patch import KubernetesServicePatch
 from charms.s3proxy_k8s.v0.object_storage import (
     ObjectStorageDataProvidedEvent,
@@ -136,7 +138,7 @@ class S3ProxyK8SOperatorCharm(CharmBase):
 
     def _on_client_requested(self, event: ObjectStorageDataProvidedEvent):
         """Update requirers with endpoint information."""
-        if not self._container.can_connect():
+        if not self._container.can_connect() or not self.is_ready:
             event.defer()
             return
 
@@ -232,6 +234,21 @@ class S3ProxyK8SOperatorCharm(CharmBase):
     def hostname(self) -> str:
         """Unit's hostname."""
         return socket.getfqdn()
+
+    @property
+    def is_ready(self) -> bool:
+        """Check whether the endpoint is really reachable."""
+        client = boto3.client(
+            service_name="s3",
+            endpoint_url="http://127.0.0.1:8080",
+            aws_access_key_id=self._credentials["identity"],
+            aws_secret_access_key=self._credentials["credential"],
+        )
+        try:
+            client.list_buckets()
+            return True
+        except exceptions.BotoCoreError:
+            return False
 
 
 if __name__ == "__main__":  # pragma: nocover
