@@ -138,6 +138,7 @@ class S3ProxyK8SOperatorCharm(CharmBase):
         """Update requirers with endpoint information."""
         if not self._container.can_connect():
             event.defer()
+            return
 
         client = s3client(
             service_name="s3",
