@@ -30,7 +30,7 @@ If no value is specified for `identity` or `credentials`, one will be automatica
 access is disabled:
 
 ```sh
-$ juju run s3cmd-k8s/0 get-credentials
+$ juju run s3proxy-k8s/0 get-credentials
 ```
 
 ## OCI Images
